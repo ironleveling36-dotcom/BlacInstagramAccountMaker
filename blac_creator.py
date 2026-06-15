@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Blac – Instagram Account Creator (Email verification)
-Uses hardcoded client_id, missing CSRF, and simple enc_password.
-Includes proper email code handling.
+Blac – Instagram Account Creator (Email verification – Fixed)
+Uses hardcoded client_id, missing CSRF, and proper code field.
 """
 import time
 import random
@@ -16,7 +15,6 @@ from dotenv import load_dotenv
 from blac_core.proxy_manager import rotate_proxy, mark_proxy_bad
 from blac_core.account_generator import generate_username, generate_fullname
 from blac_core.temp_mail import get_temp_email, get_inbox, read_message
-from blac_core.verif_code import get_instagram_code
 from blac_core.session_saver import save_account
 
 load_dotenv()
@@ -26,6 +24,24 @@ IG_APP_ID = '936619743392459'
 
 def generate_client_id():
     return CLIENT_ID
+
+def get_verification_code(email: str, timeout: int = 180) -> str:
+    """Wait for email and extract 6-digit code."""
+    start = time.time()
+    while time.time() - start < timeout:
+        messages = get_inbox(email)
+        for msg in messages:
+            msg_id = msg.get('id')
+            if not msg_id:
+                continue
+            body = read_message(email, msg_id).get('body', '')
+            # Look for 6-digit number
+            import re
+            match = re.search(r'\b(\d{6})\b', body)
+            if match:
+                return match.group(1)
+        time.sleep(5)
+    raise Exception("Verification code not received")
 
 def create_account(proxy: str = None) -> bool:
     sess = requests.Session()
@@ -79,58 +95,63 @@ def create_account(proxy: str = None) -> bool:
         print(f"[!] Request error: {e}")
         return False
     
-    # Handle response
+    # If account created immediately (no verification)
     if result.get('account_created', False):
-        print(f"[✓] Account created (no verification needed): {username}")
+        print(f"[✓] Account created (no verification): {username}")
         session_id = sess.cookies.get('sessionid', '')
         expiry = (datetime.now() + timedelta(days=30)).isoformat()
         save_account(username, password, email, session_id, expiry, "accounts.json")
         return True
     
-    elif result.get('checkpoint_url'):
-        print(f"[!] Checkpoint – need email verification for: {username}")
-        # Wait for email and get code
+    # Checkpoint – need verification
+    if result.get('checkpoint_url') or result.get('errors'):
+        print(f"[!] Verification required for: {username}")
+        # Try to get code
         try:
-            code = get_instagram_code(email, sess, timeout=180)
-            print(f"[*] Got verification code: {code}")
+            code = get_verification_code(email)
+            print(f"[*] Extracted code: {code}")
         except Exception as e:
             print(f"[!] Failed to get code: {e}")
             return False
         
-        # Resubmit with code
-        data['email_confirmation_code'] = code
-        try:
-            resp2 = sess.post('https://www.instagram.com/accounts/web_create_ajax/', data=data, headers=headers, timeout=15)
-            if resp2.status_code != 200:
-                print(f"[!] Verification resubmit failed: HTTP {resp2.status_code}")
-                return False
-            result2 = resp2.json()
-        except Exception as e:
-            print(f"[!] Verification request error: {e}")
-            return False
+        # Determine the correct field name for the code
+        # Try common field names
+        code_fields = ['code', 'email_confirmation_code', 'confirmation_code', 'verification_code']
+        success = False
+        for field in code_fields:
+            data[field] = code
+            try:
+                resp2 = sess.post('https://www.instagram.com/accounts/web_create_ajax/', data=data, headers=headers, timeout=15)
+                if resp2.status_code != 200:
+                    continue
+                result2 = resp2.json()
+                if result2.get('account_created', False):
+                    success = True
+                    break
+                # If error indicates wrong field, continue
+                if 'errors' in result2 and field in str(result2['errors']):
+                    continue
+                # If any other error, break
+                if not result2.get('checkpoint_url'):
+                    break
+            except:
+                continue
         
-        if result2.get('account_created', False):
+        if success:
             print(f"[✓] Account verified and created: {username}")
             session_id = sess.cookies.get('sessionid', '')
             expiry = (datetime.now() + timedelta(days=30)).isoformat()
             save_account(username, password, email, session_id, expiry, "accounts.json")
             return True
-        elif result2.get('errors', {}).get('email_confirmation_code'):
-            print(f"[!] Invalid code: {result2['errors']['email_confirmation_code']}")
-            return False
         else:
-            print(f"[?] Unknown verification response: {result2}")
+            print(f"[!] Invalid code or field. Last response: {result2 if 'result2' in locals() else 'none'}")
             return False
     
-    elif 'errors' in result:
-        print(f"[!] Error: {result['errors']}")
-        return False
-    else:
-        print(f"[?] Unknown response: {result}")
-        return False
+    print(f"[?] Unknown response: {result}")
+    return False
 
 def main():
-    print("Blac – Instagram Account Creator (Email verification)")
+    print("Blac – Instagram Account Creator (Email verification – Fixed)")
     while True:
         proxy_dict = rotate_proxy()
         if not proxy_dict:
@@ -152,8 +173,6 @@ def main():
             delay = random.randint(120, 300)
             print(f"[✓] Success. Waiting {delay}s...")
         else:
-            # Only mark proxy bad on network/429 errors, not on application errors
-            # For simplicity, we'll still rotate, but you could refine.
             mark_proxy_bad(proxy_dict)
             delay = random.randint(15, 30)
             print(f"[!] Failure. Retrying with new proxy in {delay}s...")
