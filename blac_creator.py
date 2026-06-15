@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Blac – Instagram Account Creator (Email verification)
-Uses mail.tm API for reliable temp email (direct connection).
-Proxy used only for Instagram requests.
+Blac – Instagram Account Creator (Final)
+- Uses mail.tm API for temp email (direct connection, no proxy)
+- Proxy used only for Instagram requests
+- Handles code extraction and submission
 """
 import time
 import random
@@ -57,11 +58,9 @@ def wait_for_instagram_code(mail_session, timeout=180):
             messages = resp.json()['hydra:member']
             for msg in messages:
                 if 'instagram' in msg['subject'].lower():
-                    # Fetch full message
                     resp2 = mail_session.get(f"https://api.mail.tm/messages/{msg['id']}", timeout=10)
                     if resp2.status_code == 200:
                         data = resp2.json()
-                        # Get plain text or HTML
                         body = data.get('text')[0] if data.get('text') else (data.get('html')[0] if data.get('html') else '')
                         match = re.search(r'\b(\d{6})\b', body)
                         if match:
