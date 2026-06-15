@@ -2,7 +2,7 @@ import time
 import re
 from .temp_mail import get_inbox, read_message
 
-def get_instagram_code(email: str, timeout: int = 180) -> str:
+def get_instagram_code(email: str, session=None, timeout: int = 180) -> str:
     start = time.time()
     while time.time() - start < timeout:
         messages = get_inbox(email)
