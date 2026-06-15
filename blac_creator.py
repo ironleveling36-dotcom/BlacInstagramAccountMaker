@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Blac – Instagram Account Creator (Final)
-- Uses mail.tm API for temp email (direct connection, no proxy)
-- Proxy used only for Instagram requests
-- Handles code extraction and submission
+Blac – Instagram Account Creator (Debug Email)
+- Uses mail.tm API for temp email
+- Prints inbox content if code not received
 """
 import time
 import random
@@ -24,7 +23,7 @@ load_dotenv()
 CLIENT_ID = 'X5uC6wALAAF-Lw3oSZE9kuY0mP_9'
 IG_APP_ID = '936619743392459'
 
-def create_temp_email_direct():
+def create_temp_email_mailtm():
     """Create a temporary email using mail.tm API (no proxy)."""
     sess = requests.Session()
     # Get domains
@@ -50,14 +49,19 @@ def create_temp_email_direct():
     return email, sess
 
 def wait_for_instagram_code(mail_session, timeout=180):
-    """Poll mail.tm inbox for Instagram code."""
+    """Poll mail.tm inbox for Instagram code. Prints inbox on timeout."""
     start = time.time()
+    last_emails = []
     while time.time() - start < timeout:
         resp = mail_session.get("https://api.mail.tm/messages", timeout=10)
         if resp.status_code == 200:
             messages = resp.json()['hydra:member']
+            # Store last 2 messages for debugging
+            if len(messages) > 0:
+                last_emails = messages[:2]
             for msg in messages:
                 if 'instagram' in msg['subject'].lower():
+                    # Fetch full message
                     resp2 = mail_session.get(f"https://api.mail.tm/messages/{msg['id']}", timeout=10)
                     if resp2.status_code == 200:
                         data = resp2.json()
@@ -66,12 +70,31 @@ def wait_for_instagram_code(mail_session, timeout=180):
                         if match:
                             return match.group(1)
         time.sleep(5)
+    
+    # Timeout – show last emails for debugging
+    print("\n[!] Code not received after timeout. Last emails in inbox:")
+    if not last_emails:
+        print("    No emails found.")
+    else:
+        for idx, msg in enumerate(last_emails, 1):
+            print(f"    Email {idx}: Subject: {msg.get('subject', 'No subject')}")
+            # Fetch full message to show body snippet
+            try:
+                resp2 = mail_session.get(f"https://api.mail.tm/messages/{msg['id']}", timeout=10)
+                if resp2.status_code == 200:
+                    data = resp2.json()
+                    body = data.get('text')[0] if data.get('text') else (data.get('html')[0] if data.get('html') else '')
+                    print(f"        Body snippet: {body[:200]}...")
+                else:
+                    print(f"        Could not fetch message content (HTTP {resp2.status_code})")
+            except Exception as e:
+                print(f"        Error fetching message: {e}")
     raise Exception("Code not received")
 
 def create_account(proxy: str = None) -> bool:
     # Create temp email directly (no proxy)
     try:
-        email, mail_session = create_temp_email_direct()
+        email, mail_session = create_temp_email_mailtm()
         print(f"[*] Temp email: {email}")
     except Exception as e:
         print(f"[!] Failed to create temp email: {e}")
@@ -168,7 +191,7 @@ def create_account(proxy: str = None) -> bool:
     return False
 
 def main():
-    print("Blac – Instagram Account Creator (mail.tm – direct email)")
+    print("Blac – Instagram Account Creator (with email debug)")
     while True:
         proxy_dict = rotate_proxy()
         if not proxy_dict:
