@@ -79,3 +79,9 @@ def get_proxy_stats() -> Dict:
         "socks": sum(1 for p in PROXY_LIST if p['type'].startswith('socks')),
         "auth": sum(1 for p in PROXY_LIST if p['user'])
     }
+
+def mark_proxy_bad(proxy: Dict):
+    """Remove a proxy from the global list so it won't be reused."""
+    if proxy in PROXY_LIST:
+        PROXY_LIST.remove(proxy)
+    print(f"[!] Removed bad proxy: {proxy['host']}:{proxy['port']}")
