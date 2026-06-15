@@ -45,7 +45,6 @@ def rotate_proxy() -> Optional[Dict]:
     if not PROXY_LIST:
         return None
     new = random.choice(PROXY_LIST)
-    # Avoid reusing the same proxy consecutively
     while hasattr(rotate_proxy, 'last') and new == rotate_proxy.last and len(PROXY_LIST) > 1:
         new = random.choice(PROXY_LIST)
     rotate_proxy.last = new
