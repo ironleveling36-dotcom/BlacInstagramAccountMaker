@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Blac – Instagram Account Creator (Email verification – Final)
-Uses mail.tm API for reliable temp email.
+Blac – Instagram Account Creator (Email verification)
+Uses temp-mail.io API for reliable temporary email.
 """
 import time
 import random
@@ -22,43 +22,32 @@ load_dotenv()
 CLIENT_ID = 'X5uC6wALAAF-Lw3oSZE9kuY0mP_9'
 IG_APP_ID = '936619743392459'
 
-def get_temp_email_mailtm():
-    """Create a temporary email using mail.tm API."""
-    sess = requests.Session()
-    # Create account
-    resp = sess.get("https://api.mail.tm/domains")
+def create_temp_email():
+    """Create a temporary email using temp-mail.io API."""
+    session = requests.Session()
+    resp = session.get("https://api.temp-mail.io/request/domains/format/json")
+    if resp.status_code != 200:
+        raise Exception("Failed to get domains")
     domains = resp.json()
-    domain = domains['hydra:member'][0]['domain']
+    domain = random.choice(domains)
     name = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=10))
     email = f"{name}@{domain}"
-    password = secrets.token_hex(8)
-    payload = {"address": email, "password": password}
-    resp = sess.post("https://api.mail.tm/accounts", json=payload)
-    if resp.status_code != 201:
-        raise Exception("Failed to create mail.tm account")
-    account = resp.json()
-    # Login to get token
-    resp = sess.post("https://api.mail.tm/token", json={"address": email, "password": password})
-    token = resp.json()['token']
-    sess.headers.update({"Authorization": f"Bearer {token}"})
-    return email, sess
+    return email, session
 
-def wait_for_instagram_code(mail_session, timeout=180):
-    """Poll mail.tm inbox for Instagram code."""
+def wait_for_instagram_code(email, session, timeout=180):
+    """Poll temp-mail.io inbox for Instagram code."""
     start = time.time()
     while time.time() - start < timeout:
-        resp = mail_session.get("https://api.mail.tm/messages")
+        resp = session.get(f"https://api.temp-mail.io/request/mail/id/{email}/format/json")
         if resp.status_code == 200:
-            messages = resp.json()['hydra:member']
+            messages = resp.json()
             for msg in messages:
-                if 'instagram' in msg['subject'].lower():
-                    # Fetch full message
-                    resp2 = mail_session.get(f"https://api.mail.tm/messages/{msg['id']}")
-                    if resp2.status_code == 200:
-                        body = resp2.json()['html'][0] if resp2.json()['html'] else resp2.json()['text'][0]
-                        match = re.search(r'\b(\d{6})\b', body)
-                        if match:
-                            return match.group(1)
+                subject = msg.get('mail_subject', '')
+                if 'instagram' in subject.lower():
+                    body = msg.get('mail_text_only', '') or msg.get('mail_html', '')
+                    match = re.search(r'\b(\d{6})\b', body)
+                    if match:
+                        return match.group(1)
         time.sleep(5)
     raise Exception("Code not received")
 
@@ -69,9 +58,8 @@ def create_account(proxy: str = None) -> bool:
     
     cookie = secrets.token_hex(8) * 2
     
-    # Create temp email
     try:
-        email, mail_session = get_temp_email_mailtm()
+        email, mail_session = create_temp_email()
         print(f"[*] Temp email: {email}")
     except Exception as e:
         print(f"[!] Failed to create temp email: {e}")
@@ -121,7 +109,6 @@ def create_account(proxy: str = None) -> bool:
         print(f"[!] Request error: {e}")
         return False
     
-    # Immediate success (no verification)
     if result.get('account_created', False):
         print(f"[✓] Account created (no verification): {username}")
         session_id = sess.cookies.get('sessionid', '')
@@ -129,17 +116,15 @@ def create_account(proxy: str = None) -> bool:
         save_account(username, password, email, session_id, expiry, "accounts.json")
         return True
     
-    # Need verification
     if result.get('checkpoint_url') or result.get('errors'):
         print(f"[!] Verification required for: {username}")
         try:
-            code = wait_for_instagram_code(mail_session)
+            code = wait_for_instagram_code(email, mail_session)
             print(f"[*] Got code: {code}")
         except Exception as e:
             print(f"[!] Code extraction failed: {e}")
             return False
         
-        # Submit code
         data['code'] = code
         try:
             resp2 = sess.post('https://www.instagram.com/accounts/web_create_ajax/', data=data, headers=headers, timeout=15)
@@ -157,18 +142,15 @@ def create_account(proxy: str = None) -> bool:
             expiry = (datetime.now() + timedelta(days=30)).isoformat()
             save_account(username, password, email, session_id, expiry, "accounts.json")
             return True
-        elif result2.get('errors', {}).get('code'):
-            print(f"[!] Invalid code. Error: {result2['errors']['code']}")
-            return False
         else:
-            print(f"[?] Unknown verification response: {result2}")
+            print(f"[!] Invalid code or other error: {result2}")
             return False
     
     print(f"[?] Unknown response: {result}")
     return False
 
 def main():
-    print("Blac – Instagram Account Creator (mail.tm email)")
+    print("Blac – Instagram Account Creator (temp-mail.io)")
     while True:
         proxy_dict = rotate_proxy()
         if not proxy_dict:
