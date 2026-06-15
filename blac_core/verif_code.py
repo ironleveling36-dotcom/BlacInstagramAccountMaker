@@ -7,7 +7,10 @@ def get_instagram_code(email: str, session=None, timeout: int = 180) -> str:
     while time.time() - start < timeout:
         messages = get_inbox(email)
         for msg in messages:
-            body = read_message(email, msg['id']).get('body', '')
+            msg_id = msg.get('id')
+            if not msg_id:
+                continue
+            body = read_message(email, msg_id).get('body', '')
             match = re.search(r'\b(\d{6})\b', body)
             if match:
                 return match.group(1)
