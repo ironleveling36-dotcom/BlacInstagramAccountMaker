@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Blac – Instagram Account Creator (Email verification – Resend & Reliable)
+Blac – Instagram Account Creator (Email verification – Final)
+Uses mail.tm API for reliable temp email.
 """
 import time
 import random
@@ -14,7 +15,6 @@ from dotenv import load_dotenv
 
 from blac_core.proxy_manager import rotate_proxy, mark_proxy_bad
 from blac_core.account_generator import generate_username, generate_fullname
-from blac_core.temp_mail import get_temp_email, get_inbox, read_message
 from blac_core.session_saver import save_account
 
 load_dotenv()
@@ -22,39 +22,45 @@ load_dotenv()
 CLIENT_ID = 'X5uC6wALAAF-Lw3oSZE9kuY0mP_9'
 IG_APP_ID = '936619743392459'
 
-def wait_for_instagram_email(email: str, timeout: int = 180) -> str:
-    """Wait for email from Instagram and extract 6-digit code."""
+def get_temp_email_mailtm():
+    """Create a temporary email using mail.tm API."""
+    sess = requests.Session()
+    # Create account
+    resp = sess.get("https://api.mail.tm/domains")
+    domains = resp.json()
+    domain = domains['hydra:member'][0]['domain']
+    name = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=10))
+    email = f"{name}@{domain}"
+    password = secrets.token_hex(8)
+    payload = {"address": email, "password": password}
+    resp = sess.post("https://api.mail.tm/accounts", json=payload)
+    if resp.status_code != 201:
+        raise Exception("Failed to create mail.tm account")
+    account = resp.json()
+    # Login to get token
+    resp = sess.post("https://api.mail.tm/token", json={"address": email, "password": password})
+    token = resp.json()['token']
+    sess.headers.update({"Authorization": f"Bearer {token}"})
+    return email, sess
+
+def wait_for_instagram_code(mail_session, timeout=180):
+    """Poll mail.tm inbox for Instagram code."""
     start = time.time()
     while time.time() - start < timeout:
-        messages = get_inbox(email)
-        for msg in messages:
-            subject = msg.get('subject', '')
-            body = msg.get('body', '') or read_message(email, msg.get('id')).get('body', '')
-            if 'instagram' in subject.lower() or 'instagram' in body.lower():
-                match = re.search(r'\b(\d{6})\b', body)
-                if match:
-                    print(f"[*] Found code in email: {match.group(1)}")
-                    return match.group(1)
-        time.sleep(5)
-    raise Exception("No Instagram email received")
-
-def resend_code(sess, headers, data):
-    """Request a new verification code."""
-    # Try to resend using the same endpoint with a special flag
-    resend_data = data.copy()
-    resend_data['resend_code'] = 'true'
-    try:
-        resp = sess.post('https://www.instagram.com/accounts/web_create_ajax/', data=resend_data, headers=headers, timeout=15)
+        resp = mail_session.get("https://api.mail.tm/messages")
         if resp.status_code == 200:
-            result = resp.json()
-            if result.get('account_created', False):
-                return True
-            # Check if resend was successful
-            if 'checkpoint' in result.get('message', '').lower():
-                return True
-    except:
-        pass
-    return False
+            messages = resp.json()['hydra:member']
+            for msg in messages:
+                if 'instagram' in msg['subject'].lower():
+                    # Fetch full message
+                    resp2 = mail_session.get(f"https://api.mail.tm/messages/{msg['id']}")
+                    if resp2.status_code == 200:
+                        body = resp2.json()['html'][0] if resp2.json()['html'] else resp2.json()['text'][0]
+                        match = re.search(r'\b(\d{6})\b', body)
+                        if match:
+                            return match.group(1)
+        time.sleep(5)
+    raise Exception("Code not received")
 
 def create_account(proxy: str = None) -> bool:
     sess = requests.Session()
@@ -63,7 +69,14 @@ def create_account(proxy: str = None) -> bool:
     
     cookie = secrets.token_hex(8) * 2
     
-    email = get_temp_email()
+    # Create temp email
+    try:
+        email, mail_session = get_temp_email_mailtm()
+        print(f"[*] Temp email: {email}")
+    except Exception as e:
+        print(f"[!] Failed to create temp email: {e}")
+        return False
+    
     fullname = generate_fullname()
     username = generate_username()
     password = "blac@123"
@@ -97,18 +110,18 @@ def create_account(proxy: str = None) -> bool:
         'tos_version': 'row'
     }
     
-    # First attempt
+    # First POST
     try:
         resp = sess.post('https://www.instagram.com/accounts/web_create_ajax/', data=data, headers=headers, timeout=15)
         if resp.status_code != 200:
-            print(f"[!] Creation failed: HTTP {resp.status_code}")
+            print(f"[!] HTTP {resp.status_code}")
             return False
         result = resp.json()
     except Exception as e:
         print(f"[!] Request error: {e}")
         return False
     
-    # If account created immediately (no verification)
+    # Immediate success (no verification)
     if result.get('account_created', False):
         print(f"[✓] Account created (no verification): {username}")
         session_id = sess.cookies.get('sessionid', '')
@@ -116,36 +129,26 @@ def create_account(proxy: str = None) -> bool:
         save_account(username, password, email, session_id, expiry, "accounts.json")
         return True
     
-    # Checkpoint – need verification
+    # Need verification
     if result.get('checkpoint_url') or result.get('errors'):
         print(f"[!] Verification required for: {username}")
-        # Wait for email and extract code
         try:
-            code = wait_for_instagram_email(email)
-            print(f"[*] Extracted code: {code}")
+            code = wait_for_instagram_code(mail_session)
+            print(f"[*] Got code: {code}")
         except Exception as e:
-            print(f"[!] Failed to get code: {e}")
-            # Try to resend
-            print("[*] Requesting new code...")
-            if resend_code(sess, headers, data):
-                time.sleep(10)
-                try:
-                    code = wait_for_instagram_email(email, timeout=60)
-                except:
-                    return False
-            else:
-                return False
+            print(f"[!] Code extraction failed: {e}")
+            return False
         
-        # Submit code using the correct field name (usually 'code')
+        # Submit code
         data['code'] = code
         try:
             resp2 = sess.post('https://www.instagram.com/accounts/web_create_ajax/', data=data, headers=headers, timeout=15)
             if resp2.status_code != 200:
-                print(f"[!] Code submission failed: HTTP {resp2.status_code}")
+                print(f"[!] Code submission HTTP {resp2.status_code}")
                 return False
             result2 = resp2.json()
         except Exception as e:
-            print(f"[!] Code request error: {e}")
+            print(f"[!] Code submit error: {e}")
             return False
         
         if result2.get('account_created', False):
@@ -165,7 +168,7 @@ def create_account(proxy: str = None) -> bool:
     return False
 
 def main():
-    print("Blac – Instagram Account Creator (Resend & Reliable Email)")
+    print("Blac – Instagram Account Creator (mail.tm email)")
     while True:
         proxy_dict = rotate_proxy()
         if not proxy_dict:
