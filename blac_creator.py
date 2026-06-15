@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 Blac – Pure HTTP Instagram Account Creator
-Handles 429, rotates proxies, supports HTTP & SOCKS5.
+- Handles 429 by rotating proxies
+- All requests go through proxy
+- Realistic headers and delays
 """
 import time
 import random
@@ -9,55 +11,38 @@ import json
 import re
 import requests
 from datetime import datetime, timedelta
-from typing import Dict, Optional
-
-# If you have the proxy manager modules, import them; otherwise define inline.
-# For simplicity, we'll include proxy management inline.
 
 PROXY_FILE = "proxies.txt"
-
-def load_proxies() -> list:
-    """Load proxies from file, one per line, in any format:
-       http://user:pass@host:port
-       socks5://user:pass@host:port
-       host:port:user:pass
-       host:port
-    """
-    proxies = []
-    try:
-        with open(PROXY_FILE, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                proxies.append(line)
-    except FileNotFoundError:
-        print("[!] proxies.txt not found")
-    return proxies
-
-PROXY_LIST = load_proxies()
+WORKING_PROXIES = []   # will be loaded
 BAD_PROXIES = set()
 
-def get_proxy() -> Optional[str]:
-    """Return a random working proxy string (as used in requests)."""
-    available = [p for p in PROXY_LIST if p not in BAD_PROXIES]
+def load_proxies():
+    global WORKING_PROXIES
+    try:
+        with open(PROXY_FILE, 'r') as f:
+            lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+        WORKING_PROXIES = lines
+        print(f"[*] Loaded {len(WORKING_PROXIES)} proxies")
+    except FileNotFoundError:
+        print("[!] proxies.txt not found")
+
+def get_proxy():
+    available = [p for p in WORKING_PROXIES if p not in BAD_PROXIES]
     if not available:
         return None
     return random.choice(available)
 
-def mark_proxy_bad(proxy_str: str):
-    BAD_PROXIES.add(proxy_str)
-    print(f"[!] Marked bad: {proxy_str[:50]}...")
+def mark_proxy_bad(proxy):
+    BAD_PROXIES.add(proxy)
+    print(f"[!] Marked bad: {proxy[:60]}...")
 
-def get_shared_data(proxy: Optional[str] = None) -> Dict:
-    """
-    Fetch CSRF token and cookies using a realistic browser handshake.
-    Returns: {'csrf': str, 'cookies': dict}
-    """
+def random_delay(min_sec=0.5, max_sec=2):
+    time.sleep(random.uniform(min_sec, max_sec))
+
+def get_shared_data(proxy):
+    """Fetch CSRF token using a realistic session through the proxy."""
     sess = requests.Session()
-    if proxy:
-        # For socks5, requests expects 'socks5://...'
-        sess.proxies = {'http': proxy, 'https': proxy}
+    sess.proxies = {'http': proxy, 'https': proxy}
     
     sess.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -76,57 +61,104 @@ def get_shared_data(proxy: Optional[str] = None) -> Dict:
         'Cache-Control': 'max-age=0',
     })
     
-    # First, visit homepage to get base cookies
-    home = sess.get("https://www.instagram.com/", timeout=15)
-    home.raise_for_status()
+    # Step 1: Homepage
+    print("[DEBUG] Fetching homepage...")
+    resp = sess.get("https://www.instagram.com/", timeout=15)
+    if resp.status_code != 200:
+        raise Exception(f"Homepage returned {resp.status_code}")
+    random_delay(1.5, 3)
     
-    # Then go to signup page
+    # Step 2: Signup page
+    print("[DEBUG] Fetching signup page...")
     resp = sess.get("https://www.instagram.com/accounts/emailsignup/", timeout=15)
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        raise Exception(f"Signup page returned {resp.status_code}")
     
-    # Try to get CSRF from cookie (most reliable)
+    # Extract CSRF from cookies
     csrf = sess.cookies.get('csrftoken')
     if csrf:
-        return {"csrf": csrf, "cookies": sess.cookies.get_dict()}
+        print(f"[DEBUG] CSRF from cookie: {csrf[:10]}...")
+        return csrf, sess.cookies.get_dict()
     
-    # Fallback: extract from HTML
+    # Fallback: search HTML
     html = resp.text
     match = re.search(r'"csrf_token":"([^"]+)"', html)
     if match:
         csrf = match.group(1)
-        return {"csrf": csrf, "cookies": sess.cookies.get_dict()}
+        print(f"[DEBUG] CSRF from HTML: {csrf[:10]}...")
+        return csrf, sess.cookies.get_dict()
     
-    # Last resort: __NEXT_DATA__
-    match = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>([^<]+)</script>', html)
-    if match:
+    raise Exception("CSRF not found")
+
+def generate_username():
+    first = random.choice(["Rajesh","Priya","Amit","Neha","Vikram","Sneha","Rahul","Anjali"])
+    last = random.choice(["Sharma","Verma","Gupta","Kumar","Singh","Patel","Reddy","Yadav"])
+    base = first.lower() + last.lower()
+    suffix = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=random.randint(2,4)))
+    sep = random.choice(['.', '_', ''])
+    username = (base + sep + suffix)[:30]
+    return username
+
+def generate_fullname():
+    first = random.choice(["Rajesh","Priya","Amit","Neha","Vikram","Sneha","Rahul","Anjali"])
+    last = random.choice(["Sharma","Verma","Gupta","Kumar","Singh","Patel","Reddy","Yadav"])
+    return f"{first} {last}"
+
+def get_temp_email():
+    import string
+    name = ''.join(random.choices(string.ascii_lowercase + string.digits, k=random.randint(8,12)))
+    domain = random.choice(["1secmail.com", "1secmail.org", "1secmail.net"])
+    return f"{name}@{domain}"
+
+def get_instagram_code(email, timeout=180):
+    name, domain = email.split('@')
+    start = time.time()
+    while time.time() - start < timeout:
         try:
-            data = json.loads(match.group(1))
-            csrf = data.get('props', {}).get('pageProps', {}).get('csrf_token')
-            if csrf:
-                return {"csrf": csrf, "cookies": sess.cookies.get_dict()}
+            url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={name}&domain={domain}"
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200 and resp.json():
+                msg_id = resp.json()[0]['id']
+                msg_url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={name}&domain={domain}&id={msg_id}"
+                msg = requests.get(msg_url).json()
+                body = msg.get('body', '')
+                code = re.search(r'\b(\d{6})\b', body)
+                if code:
+                    return code.group(1)
         except:
             pass
-    
-    raise Exception("Could not obtain CSRF token (blocked or bad proxy)")
+        time.sleep(5)
+    raise Exception("Verification code not received")
 
-def generate_client_id() -> str:
-    return f"wp-{''.join(random.choices('abcdef0123456789', k=10))}"
-
-def create_account(proxy_str: Optional[str] = None) -> bool:
-    # 1. Get CSRF and initial cookies
+def save_account(username, password, email, session_id, expiry, filename="accounts.json"):
     try:
-        shared = get_shared_data(proxy_str)
-        csrf = shared['csrf']
-        init_cookies = shared['cookies']
-    except Exception as e:
-        print(f"[!] Failed to get CSRF: {e}")
-        return False
+        with open(filename, 'r') as f:
+            accounts = json.load(f)
+    except:
+        accounts = []
+    accounts.append({
+        "username": username,
+        "password": password,
+        "email": email,
+        "session_id": session_id,
+        "session_expiry": expiry,
+        "created_at": datetime.now().isoformat()
+    })
+    with open(filename, 'w') as f:
+        json.dump(accounts, f, indent=2)
+    print(f"[✓] Saved to {filename}")
 
-    # 2. Create session with proper headers
-    sess = requests.Session()
-    if proxy_str:
-        sess.proxies = {'http': proxy_str, 'https': proxy_str}
+def create_account(proxy):
+    # Get CSRF and initial cookies
+    try:
+        csrf, cookies = get_shared_data(proxy)
+    except Exception as e:
+        print(f"[!] CSRF extraction failed: {e}")
+        return False
     
+    # Create session for the POST request
+    sess = requests.Session()
+    sess.proxies = {'http': proxy, 'https': proxy}
     sess.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'X-CSRFToken': csrf,
@@ -139,22 +171,17 @@ def create_account(proxy_str: Optional[str] = None) -> bool:
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Site': 'same-origin',
     })
-    
-    for name, value in init_cookies.items():
+    for name, value in cookies.items():
         sess.cookies.set(name, value, domain='.instagram.com')
     
-    # 3. Generate account data
-    from blac_core.account_generator import generate_username, generate_fullname
-    from blac_core.temp_mail import get_temp_email
-    from blac_core.session_saver import save_account
-    
+    # Generate account data
     email = get_temp_email()
     fullname = generate_fullname()
     username = generate_username()
     password = "blac@123"
     ts = int(time.time())
     enc_password = f"#PWD_INSTAGRAM_BROWSER:10:{ts}:6:{password}"
-    client_id = generate_client_id()
+    client_id = f"wp-{''.join(random.choices('abcdef0123456789', k=10))}"
     
     data = {
         'email': email,
@@ -169,54 +196,52 @@ def create_account(proxy_str: Optional[str] = None) -> bool:
         'use_new_segmenting': '1'
     }
     
-    # 4. POST to signup endpoint
+    # Submit
     try:
         resp = sess.post("https://www.instagram.com/accounts/web_create_ajax/", data=data, timeout=15)
         if resp.status_code == 429:
-            print("[!] Rate limited (429).")
+            print("[!] 429 Rate limit")
             return False
         if resp.status_code != 200:
-            print(f"[!] HTTP {resp.status_code} – {resp.text[:200]}")
+            print(f"[!] HTTP {resp.status_code}: {resp.text[:200]}")
             return False
         result = resp.json()
     except Exception as e:
-        print(f"[!] Request failed: {e}")
+        print(f"[!] POST error: {e}")
         return False
     
-    # 5. Process response
-    if result.get('account_created', False):
+    if result.get('account_created'):
         print(f"[✓] Account created: {username}")
         session_id = sess.cookies.get('sessionid', '')
         expiry = (datetime.now() + timedelta(days=30)).isoformat()
-        save_account(username, password, email, session_id, expiry, "accounts.json")
+        save_account(username, password, email, session_id, expiry)
         return True
     elif result.get('checkpoint_url'):
-        print(f"[!] Checkpoint – need verification: {username}")
-        return False
-    elif 'spam' in str(result).lower():
-        print(f"[!] Spam block – proxy flagged.")
+        print(f"[!] Checkpoint required: {username}")
         return False
     else:
-        print(f"[?] Unknown response: {result}")
+        print(f"[?] Response: {result}")
         return False
 
 def main():
-    print("Blac – Pure HTTP Instagram Account Creator")
+    load_proxies()
+    if not WORKING_PROXIES:
+        print("[!] No proxies. Exiting.")
+        return
+    print("Blac – Pure HTTP (429 resilient)")
     while True:
-        proxy_str = get_proxy()
-        if not proxy_str:
-            print("[!] No working proxies. Add proxies to proxies.txt")
+        proxy = get_proxy()
+        if not proxy:
+            print("[!] No proxies left. Add more to proxies.txt")
             time.sleep(60)
             continue
-        print(f"[*] Using proxy: {proxy_str[:80]}...")
-        success = create_account(proxy_str)
+        print(f"[*] Trying proxy: {proxy[:80]}...")
+        success = create_account(proxy)
         if success:
-            # Success: keep proxy, wait longer
             delay = random.randint(120, 300)
-            print(f"[✓] Success. Waiting {delay}s before next account...")
+            print(f"[✓] Success. Waiting {delay}s before next...")
         else:
-            # Failure: mark proxy as bad, immediately retry with new proxy
-            mark_proxy_bad(proxy_str)
+            mark_proxy_bad(proxy)
             delay = random.randint(5, 15)
             print(f"[!] Failure. Retrying with new proxy in {delay}s...")
         time.sleep(delay)
