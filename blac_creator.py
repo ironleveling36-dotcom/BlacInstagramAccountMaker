@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Blac – Pure HTTP Instagram Account Creator
-Handles SOCKS5 proxies correctly, random delays, 429 retry.
+Handles 429, rotates proxies, supports HTTP & SOCKS5.
 """
 import time
 import random
@@ -11,22 +11,54 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
-from blac_core.proxy_manager import rotate_proxy, format_proxy_url, mark_proxy_bad
-from blac_core.account_generator import generate_username, generate_fullname
-from blac_core.temp_mail import get_temp_email
-from blac_core.verif_code import get_instagram_code
-from blac_core.session_saver import save_account
+# If you have the proxy manager modules, import them; otherwise define inline.
+# For simplicity, we'll include proxy management inline.
 
-def get_shared_data(proxy_url: Optional[str] = None) -> Dict:
+PROXY_FILE = "proxies.txt"
+
+def load_proxies() -> list:
+    """Load proxies from file, one per line, in any format:
+       http://user:pass@host:port
+       socks5://user:pass@host:port
+       host:port:user:pass
+       host:port
+    """
+    proxies = []
+    try:
+        with open(PROXY_FILE, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                proxies.append(line)
+    except FileNotFoundError:
+        print("[!] proxies.txt not found")
+    return proxies
+
+PROXY_LIST = load_proxies()
+BAD_PROXIES = set()
+
+def get_proxy() -> Optional[str]:
+    """Return a random working proxy string (as used in requests)."""
+    available = [p for p in PROXY_LIST if p not in BAD_PROXIES]
+    if not available:
+        return None
+    return random.choice(available)
+
+def mark_proxy_bad(proxy_str: str):
+    BAD_PROXIES.add(proxy_str)
+    print(f"[!] Marked bad: {proxy_str[:50]}...")
+
+def get_shared_data(proxy: Optional[str] = None) -> Dict:
     """
     Fetch CSRF token and cookies using a realistic browser handshake.
     Returns: {'csrf': str, 'cookies': dict}
     """
     sess = requests.Session()
-    if proxy_url:
-        sess.proxies = {'http': proxy_url, 'https': proxy_url}
+    if proxy:
+        # For socks5, requests expects 'socks5://...'
+        sess.proxies = {'http': proxy, 'https': proxy}
     
-    # Modern browser headers
     sess.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'sec-ch-ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
@@ -47,13 +79,12 @@ def get_shared_data(proxy_url: Optional[str] = None) -> Dict:
     # First, visit homepage to get base cookies
     home = sess.get("https://www.instagram.com/", timeout=15)
     home.raise_for_status()
-    time.sleep(random.uniform(1, 3))  # mimic human pause
     
     # Then go to signup page
     resp = sess.get("https://www.instagram.com/accounts/emailsignup/", timeout=15)
     resp.raise_for_status()
     
-    # Try to get CSRF from cookie
+    # Try to get CSRF from cookie (most reliable)
     csrf = sess.cookies.get('csrftoken')
     if csrf:
         return {"csrf": csrf, "cookies": sess.cookies.get_dict()}
@@ -81,10 +112,10 @@ def get_shared_data(proxy_url: Optional[str] = None) -> Dict:
 def generate_client_id() -> str:
     return f"wp-{''.join(random.choices('abcdef0123456789', k=10))}"
 
-def create_account(proxy_url: Optional[str] = None) -> bool:
+def create_account(proxy_str: Optional[str] = None) -> bool:
     # 1. Get CSRF and initial cookies
     try:
-        shared = get_shared_data(proxy_url)
+        shared = get_shared_data(proxy_str)
         csrf = shared['csrf']
         init_cookies = shared['cookies']
     except Exception as e:
@@ -93,8 +124,8 @@ def create_account(proxy_url: Optional[str] = None) -> bool:
 
     # 2. Create session with proper headers
     sess = requests.Session()
-    if proxy_url:
-        sess.proxies = {'http': proxy_url, 'https': proxy_url}
+    if proxy_str:
+        sess.proxies = {'http': proxy_str, 'https': proxy_str}
     
     sess.headers.update({
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -109,11 +140,14 @@ def create_account(proxy_url: Optional[str] = None) -> bool:
         'Sec-Fetch-Site': 'same-origin',
     })
     
-    # Set cookies
     for name, value in init_cookies.items():
         sess.cookies.set(name, value, domain='.instagram.com')
     
     # 3. Generate account data
+    from blac_core.account_generator import generate_username, generate_fullname
+    from blac_core.temp_mail import get_temp_email
+    from blac_core.session_saver import save_account
+    
     email = get_temp_email()
     fullname = generate_fullname()
     username = generate_username()
@@ -139,10 +173,7 @@ def create_account(proxy_url: Optional[str] = None) -> bool:
     try:
         resp = sess.post("https://www.instagram.com/accounts/web_create_ajax/", data=data, timeout=15)
         if resp.status_code == 429:
-            # Try to read retry-after header
-            retry_after = int(resp.headers.get('retry-after', 60))
-            print(f"[!] Rate limited (429). Waiting {retry_after}s before retry (proxy will be marked bad).")
-            time.sleep(min(retry_after, 120))
+            print("[!] Rate limited (429).")
             return False
         if resp.status_code != 200:
             print(f"[!] HTTP {resp.status_code} – {resp.text[:200]}")
@@ -170,30 +201,24 @@ def create_account(proxy_url: Optional[str] = None) -> bool:
         return False
 
 def main():
-    print("Blac – Pure HTTP Instagram Account Creator (SOCKS5 fixed)")
+    print("Blac – Pure HTTP Instagram Account Creator")
     while True:
-        proxy_dict = rotate_proxy()
-        if not proxy_dict:
-            print("[!] No proxies available. Add proxies to proxies.txt")
+        proxy_str = get_proxy()
+        if not proxy_str:
+            print("[!] No working proxies. Add proxies to proxies.txt")
             time.sleep(60)
             continue
-        
-        proxy_url = format_proxy_url(proxy_dict)
-        if not proxy_url:
-            print("[!] Invalid proxy format, skipping.")
-            continue
-        
-        print(f"[*] Using proxy: {proxy_dict['host']}:{proxy_dict['port']} ({proxy_dict['type']})")
-        
-        success = create_account(proxy_url)
+        print(f"[*] Using proxy: {proxy_str[:80]}...")
+        success = create_account(proxy_str)
         if success:
+            # Success: keep proxy, wait longer
             delay = random.randint(120, 300)
             print(f"[✓] Success. Waiting {delay}s before next account...")
         else:
-            mark_proxy_bad(proxy_dict)
-            delay = random.randint(10, 30)
-            print(f"[!] Failure. Marked proxy bad. Retrying in {delay}s with new proxy...")
-        
+            # Failure: mark proxy as bad, immediately retry with new proxy
+            mark_proxy_bad(proxy_str)
+            delay = random.randint(5, 15)
+            print(f"[!] Failure. Retrying with new proxy in {delay}s...")
         time.sleep(delay)
 
 if __name__ == "__main__":
