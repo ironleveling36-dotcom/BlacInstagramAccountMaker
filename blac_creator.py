@@ -1,29 +1,27 @@
 #!/usr/bin/env python3
 """
-Blac – Test with Real Email
-Uses blacfflite@gmail.com to check if code arrives.
+Blac – Last Test with Your Gmail (Manual Code Entry)
 """
 import time
 import random
 import secrets
 import requests
-import re
 from user_agent import generate_user_agent
 
 CLIENT_ID = 'X5uC6wALAAF-Lw3oSZE9kuY0mP_9'
 IG_APP_ID = '936619743392459'
 
-def create_account(proxy: str = None) -> bool:
-    print(f"[*] Using proxy: {proxy[:50] if proxy else 'None'}...")
+def create_account(proxy: str = None):
+    print(f"[*] Using proxy: {proxy[:50] if proxy else 'None'}")
     
     sess = requests.Session()
     if proxy:
         sess.proxies = {'http': proxy, 'https': proxy}
     
     cookie = secrets.token_hex(8) * 2
-    email = "blacfflite@gmail.com"  # YOUR REAL EMAIL
+    email = "blacff07@gmail.com"   # <-- YOUR GMAIL
     fullname = "Test User"
-    username = "testuser_" + ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=6))
+    username = "tester_" + ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=6))
     password = "blac@123"
     enc_password = f"#PWD_INSTAGRAM_BROWSER:0:1589682409:{password}"
     
@@ -68,9 +66,8 @@ def create_account(proxy: str = None) -> bool:
     
     if result.get('checkpoint_url') or result.get('errors'):
         print(f"[!] Verification required for: {username}")
-        print(f"[*] Check your email: {email}")
-        print("[*] Enter the 6-digit code (or press Enter to skip):")
-        code = input("Code: ").strip()
+        print(f"[*] Check your Gmail: {email} (including Spam folder)")
+        code = input("Enter the 6-digit code (or press Enter to abort): ").strip()
         if len(code) == 6:
             data['code'] = code
             resp2 = sess.post('https://www.instagram.com/accounts/web_create_ajax/', data=data, headers=headers, timeout=15)
@@ -91,6 +88,6 @@ def create_account(proxy: str = None) -> bool:
     return False
 
 if __name__ == "__main__":
-    # Use one of your proxies (or None)
+    # Try with one of your proxies (or set to None)
     proxy = "http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@hu-bud.pvdata.host:8080"
     create_account(proxy)
