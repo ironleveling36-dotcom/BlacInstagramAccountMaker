@@ -5,4 +5,3 @@ http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@se-sto.pvdata.host:8080
 http://g2rTXpNfPdcw2fzGtWKp62yH:nizar1elad2@hu-bud.pvdata.host:8080
 http://2020800439@ogr.deu.edu.tr:Gizem952@193.140.151.121:13128
 http://joaoricardo:321zueira!@proxy.ufpr.br:3128
-socks5://45.194.33.12:30001
